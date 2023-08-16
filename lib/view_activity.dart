@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:intl/intl.dart';
 
 import 'widgets.dart';
 
@@ -378,10 +379,24 @@ class _ViewActivityState extends State<ViewActivity> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
-                        const Text('Time on device'),
+                        const Text('Time on hardware'),
                         Text(
-                          (current_time == null) ? '' : current_time!.toIso8601String(),
+                          (current_time == null) ? '' : DateFormat('HH:mm:ss').format(current_time!),
                           style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Theme.of(context).textTheme.bodySmall?.color),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(0, 10, 0, 0),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              const Text('Time on device'),
+                              Text(
+                                DateFormat('HH:mm:ss').format(DateTime.now()),
+                                style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Theme.of(context).textTheme.bodySmall?.color),
+                              )
+                            ],
+                          ),
                         ),
                         if (time!.properties.write)
                           Row(
