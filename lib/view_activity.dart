@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:intl/intl.dart';
+import 'package:silicon_labs/hardware_config_activity.dart';
+import 'package:silicon_labs/models/hardware_config.dart';
 
 import 'widgets.dart';
 
@@ -30,6 +32,9 @@ class UuidConsts {
   static final OTA_DATA = Guid("984227f3-34fc-4045-a5d0-2c581f81a153");
   static final TIME = Guid("b8470d55-e009-41ff-a648-817e4488ba57");
   static final BLINKY_SERVICE = Guid("de8a5aac-a99b-c315-0c80-60d4cbb51224");
+  static final WRITE_DATA_CONTROL = Guid("dc425463-1d21-4a71-b12c-61578c98ea6c");
+  static final WRITE_DATA = Guid("9efadae4-96d0-4839-86e4-16d9db763932");
+  static final REQUEST_CONFIG = Guid("cc10d20a-c4ec-47e2-a41e-eea7a80a985b");
 }
 
 enum States { idle, reconnecting, uploading, finalised }
@@ -44,6 +49,7 @@ class ViewActivity extends StatefulWidget {
 }
 
 class _ViewActivityState extends State<ViewActivity> {
+  List<HardwareConfig> hardwareConfigs = [];
   Uint8List data = Uint8List(0);
   var mtu = 255;
   var state = States.idle;
@@ -54,7 +60,7 @@ class _ViewActivityState extends State<ViewActivity> {
   double bitrate = 0;
   BluetoothConnectionState connectionState = BluetoothConnectionState.disconnected;
   List<BluetoothService> list = [];
-  BluetoothCharacteristic? time;
+  BluetoothCharacteristic? time, write_data_control, write_data, requestConfig;
   DateTime? current_time;
 
   List<int> _getRandomBytes() {
@@ -66,6 +72,19 @@ class _ViewActivityState extends State<ViewActivity> {
   void initState() {
     super.initState();
 
+    int year = 2024; // Leap year
+
+    for (int month = 1; month <= 12; month++) {
+      int daysInMonth = DateTime(year, month + 1, 0).day;
+
+      for (int day = 1; day <= daysInMonth; day++) {
+        DateTime date = DateTime(year, month, day);
+        for (int hour = 1; hour <= 24; hour++) {
+          hardwareConfigs.add(HardwareConfig(hour, date.day, date.month, Random().nextInt(901) + 100));
+        }
+      }
+    }
+
     widget.device.servicesStream.listen((event) {
       setState(() {
         list = event;
@@ -73,6 +92,20 @@ class _ViewActivityState extends State<ViewActivity> {
             .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
             .characteristics
             .firstWhere((element) => element.characteristicUuid == UuidConsts.TIME);
+        write_data_control = event
+            .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
+            .characteristics
+            .firstWhere((element) => element.characteristicUuid == UuidConsts.WRITE_DATA_CONTROL);
+
+        write_data = event
+            .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
+            .characteristics
+            .firstWhere((element) => element.characteristicUuid == UuidConsts.WRITE_DATA);
+
+        requestConfig = event
+            .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
+            .characteristics
+            .firstWhere((element) => element.characteristicUuid == UuidConsts.REQUEST_CONFIG);
       });
 
       if (time != null) {
@@ -294,6 +327,18 @@ class _ViewActivityState extends State<ViewActivity> {
     return bytes.reversed.toList();
   }
 
+  Uint8List intListToUint8List(List<int> intList) {
+    final uint8List = Uint8List(intList.length * 2);
+    var index = 0;
+
+    for (final intValue in intList) {
+      uint8List[index++] = intValue & 0xFF; // Lower byte
+      uint8List[index++] = (intValue >> 8) & 0xFF; // Higher byte
+    }
+
+    return uint8List;
+  }
+
   List<int> dateTimeToBytes() {
     DateTime dateTime = DateTime.now();
     List<int> bytes = [];
@@ -484,6 +529,62 @@ class _ViewActivityState extends State<ViewActivity> {
                             characteristic?.write([0], withoutResponse: false);
                           },
                           child: const Text('Upload')),
+                    ],
+                  ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.black,
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                              builder: (context) => HardwareConfigActivity(
+                                    list: hardwareConfigs,
+                                    requestConfig: requestConfig!,
+                                  ),
+                              settings: const RouteSettings(name: '/harwareConfigs'))),
+                          child: const Text('Configurations')),
+                      const SizedBox(width: 6),
+                      ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.black,
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: (write_data_control != null)
+                              ? () async {
+                                  try {
+                                    DateTime startTime = DateTime.now();
+                                    int bitsSent = 0;
+                                    List<int> intList = hardwareConfigs.map((e) => e.value).toList();
+                                    Uint8List uint16List = intListToUint8List(intList);
+                                    await write_data_control!.write([0]);
+                                    int groupSize = mtu;
+                                    do {
+                                      groupSize -= 1;
+                                    } while (groupSize % 4 != 0);
+                                    for (int i = 0; i < uint16List.length; i += groupSize) {
+                                      var sub_data = uint16List.sublist(i, ((i + groupSize) > uint16List.length ? uint16List.length : i + groupSize));
+                                      await write_data!.write(sub_data);
+                                      bitsSent += sub_data.length * 8;
+                                      DateTime currentTime = DateTime.now();
+                                      Duration elapsedTime = currentTime.difference(startTime);
+                                      double elapsedSeconds = elapsedTime.inMicroseconds.toDouble() / 1000000.0; // Convert to seconds
+                                      setState(() {
+                                        pgss = ((groupSize + i) / (uint16List.length)) * 100;
+                                        bitrate = (bitsSent / elapsedSeconds) / 1000.0;
+                                      });
+                                    }
+                                    await write_data_control!.write([0x01]);
+                                  } catch (e) {
+                                    final snackBar = SnackBar(content: Text(prettyException("Write Error:", e)));
+                                    snackBarKeyC.currentState?.showSnackBar(snackBar);
+                                  }
+                                }
+                              : null,
+                          child: const Text('Write Config'))
                     ],
                   )
                 ],
