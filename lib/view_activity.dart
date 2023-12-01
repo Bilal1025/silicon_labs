@@ -11,20 +11,15 @@ import 'package:intl/intl.dart';
 import 'package:silicon_labs/hardware_config_activity.dart';
 import 'package:silicon_labs/models/hardware_config.dart';
 
-import 'widgets.dart';
+import 'utils/snackbar.dart';
+import 'widgets/characteristic_tile.dart';
+import 'widgets/descriptor_tile.dart';
+import 'widgets/service_tile.dart';
+import 'package:collection/collection.dart';
 
 final snackBarKeyA = GlobalKey<ScaffoldMessengerState>();
 final snackBarKeyB = GlobalKey<ScaffoldMessengerState>();
 final snackBarKeyC = GlobalKey<ScaffoldMessengerState>();
-
-String prettyException(String prefix, dynamic e) {
-  if (e is FlutterBluePlusException) {
-    return "$prefix ${e.errorString}";
-  } else if (e is PlatformException) {
-    return "$prefix ${e.message}";
-  }
-  return prefix + e.toString();
-}
 
 class UuidConsts {
   static final OTA_SERVICE = Guid("1d14d6ee-fd63-4fa1-bfa4-8f47b42119f0");
@@ -56,12 +51,14 @@ class _ViewActivityState extends State<ViewActivity> {
   var mtuDivisible = 0;
   var pack = 0;
   var otatime = 0;
+  var mtuListner;
+  var connectionListner;
   double pgss = 0;
   double bitrate = 0;
   BluetoothConnectionState connectionState = BluetoothConnectionState.disconnected;
   List<BluetoothService> list = [];
   BluetoothCharacteristic? time, write_data_control, write_data, requestConfig;
-  DateTime? current_time;
+  DateTime? currentTime;
 
   List<int> _getRandomBytes() {
     final math = Random();
@@ -85,56 +82,7 @@ class _ViewActivityState extends State<ViewActivity> {
       }
     }
 
-    widget.device.servicesStream.listen((event) {
-      setState(() {
-        list = event;
-        time = event
-            .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
-            .characteristics
-            .firstWhere((element) => element.characteristicUuid == UuidConsts.TIME);
-        write_data_control = event
-            .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
-            .characteristics
-            .firstWhere((element) => element.characteristicUuid == UuidConsts.WRITE_DATA_CONTROL);
-
-        write_data = event
-            .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
-            .characteristics
-            .firstWhere((element) => element.characteristicUuid == UuidConsts.WRITE_DATA);
-
-        requestConfig = event
-            .firstWhere((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
-            .characteristics
-            .firstWhere((element) => element.characteristicUuid == UuidConsts.REQUEST_CONFIG);
-      });
-
-      if (time != null) {
-        time!.onValueReceived.listen((event) {
-          setState(() {
-            current_time = getDateFromBytes(event);
-          });
-        });
-      }
-      var ctrlChar = event
-          .firstWhere((element) => element.serviceUuid == UuidConsts.OTA_SERVICE)
-          .characteristics
-          .firstWhere((element) => element.characteristicUuid == UuidConsts.OTA_CONTROL);
-      if (state == States.reconnecting) {
-        var characteristic = event
-            .firstWhere((element) => element.serviceUuid == UuidConsts.OTA_SERVICE)
-            .characteristics
-            .firstWhere((element) => element.characteristicUuid == UuidConsts.OTA_DATA);
-        ctrlChar.write([0]).then((value) {
-          setupMtuDivisible();
-          pack = 0;
-          pgss = 0;
-          state = States.uploading;
-          otaWriteDataReliable(characteristic, ctrlChar);
-        });
-      }
-    });
-
-    widget.device.connectionState.listen((event) {
+    connectionListner = widget.device.connectionState.listen((event) {
       setState(() {
         connectionState = event;
       });
@@ -143,17 +91,83 @@ class _ViewActivityState extends State<ViewActivity> {
         if (Platform.isAndroid) {
           widget.device.requestMtu(255);
         }
-        Future.delayed(const Duration(milliseconds: 1000), () {
-          widget.device.discoverServices();
+        Future.delayed(const Duration(milliseconds: 1000), () async {
+          try {
+            await widget.device.discoverServices();
+          } catch (e) {}
+          var event = widget.device.servicesList;
+          setState(() {
+            list = event;
+            time = event
+                .firstWhereOrNull((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
+                ?.characteristics
+                .firstWhereOrNull((element) => element.characteristicUuid == UuidConsts.TIME);
+            write_data_control = event
+                .firstWhereOrNull((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
+                ?.characteristics
+                .firstWhereOrNull((element) => element.characteristicUuid == UuidConsts.WRITE_DATA_CONTROL);
+
+            write_data = event
+                .firstWhereOrNull((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
+                ?.characteristics
+                .firstWhereOrNull((element) => element.characteristicUuid == UuidConsts.WRITE_DATA);
+
+            requestConfig = event
+                .firstWhereOrNull((element) => element.serviceUuid == UuidConsts.BLINKY_SERVICE)
+                ?.characteristics
+                .firstWhereOrNull((element) => element.characteristicUuid == UuidConsts.REQUEST_CONFIG);
+          });
+
+          if (time != null) {
+            time!.onValueReceived.listen((event) {
+              setState(() {
+                currentTime = getDateFromBytes(event);
+              });
+            });
+          }
+          var ctrlChar = event
+              .firstWhere((element) => element.serviceUuid == UuidConsts.OTA_SERVICE)
+              .characteristics
+              .firstWhere((element) => element.characteristicUuid == UuidConsts.OTA_CONTROL);
+          if (state == States.reconnecting) {
+            var characteristic = event
+                .firstWhere((element) => element.serviceUuid == UuidConsts.OTA_SERVICE)
+                .characteristics
+                .firstWhere((element) => element.characteristicUuid == UuidConsts.OTA_DATA);
+            ctrlChar.write([0]).then((value) {
+              setupMtuDivisible();
+              pack = 0;
+              pgss = 0;
+              state = States.uploading;
+              otaWriteDataReliable(characteristic, ctrlChar);
+            });
+          }
+        });
+      } else {
+        setState(() {
+          list = [];
         });
       }
     });
 
-    widget.device.mtu.listen((event) {
+    mtuListner = widget.device.mtu.listen((event) {
       setState(() {
         mtu = event;
       });
     });
+  }
+
+  @override
+  void dispose() {
+    if (mtuListner != null) {
+      mtuListner.cancel();
+    }
+
+    if (connectionListner != null) {
+      connectionListner.cancel();
+    }
+
+    super.dispose();
   }
 
   List<Widget> _buildServiceTiles(BuildContext context, List<BluetoothService> services) {
@@ -363,6 +377,9 @@ class _ViewActivityState extends State<ViewActivity> {
         onPressed = () async {
           try {
             await widget.device.disconnect();
+            setState(() {
+              list = [];
+            });
           } catch (e) {
             final snackBar = SnackBar(content: Text(prettyException("Disconnect Error:", e)));
             snackBarKeyC.currentState?.showSnackBar(snackBar);
@@ -391,7 +408,7 @@ class _ViewActivityState extends State<ViewActivity> {
       key: snackBarKeyC,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(widget.device.localName),
+          title: Text(widget.device.platformName),
           actions: <Widget>[
             TextButton(
                 onPressed: onPressed,
@@ -426,7 +443,7 @@ class _ViewActivityState extends State<ViewActivity> {
                       children: <Widget>[
                         const Text('Time on hardware'),
                         Text(
-                          (current_time == null) ? '' : DateFormat('HH:mm:ss').format(current_time!),
+                          (currentTime == null) ? '' : DateFormat('HH:mm:ss').format(currentTime!),
                           style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Theme.of(context).textTheme.bodySmall?.color),
                         ),
                         Padding(
@@ -519,14 +536,14 @@ class _ViewActivityState extends State<ViewActivity> {
                           ),
                           onPressed: () async {
                             var characteristic = widget.device.servicesList
-                                ?.firstWhere((element) => element.serviceUuid == UuidConsts.OTA_SERVICE)
+                                .firstWhere((element) => element.serviceUuid == UuidConsts.OTA_SERVICE)
                                 .characteristics
                                 .firstWhere((element) => element.characteristicUuid == UuidConsts.OTA_CONTROL);
                             Future.delayed(const Duration(milliseconds: 4000), () async {
                               await widget.device.connect();
                             });
                             state = States.reconnecting;
-                            characteristic?.write([0], withoutResponse: false);
+                            characteristic.write([0], withoutResponse: false);
                           },
                           child: const Text('Upload')),
                     ],
@@ -540,12 +557,14 @@ class _ViewActivityState extends State<ViewActivity> {
                             backgroundColor: Colors.black,
                             foregroundColor: Colors.white,
                           ),
-                          onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                              builder: (context) => HardwareConfigActivity(
-                                    list: hardwareConfigs,
-                                    requestConfig: requestConfig!,
-                                  ),
-                              settings: const RouteSettings(name: '/harwareConfigs'))),
+                          onPressed: (write_data_control != null)
+                              ? () => Navigator.of(context).push(MaterialPageRoute(
+                                  builder: (context) => HardwareConfigActivity(
+                                        list: hardwareConfigs,
+                                        requestConfig: requestConfig!,
+                                      ),
+                                  settings: const RouteSettings(name: '/hardwareConfigs')))
+                              : null,
                           child: const Text('Configurations')),
                       const SizedBox(width: 6),
                       ElevatedButton(
@@ -566,9 +585,9 @@ class _ViewActivityState extends State<ViewActivity> {
                                       groupSize -= 1;
                                     } while (groupSize % 4 != 0);
                                     for (int i = 0; i < uint16List.length; i += groupSize) {
-                                      var sub_data = uint16List.sublist(i, ((i + groupSize) > uint16List.length ? uint16List.length : i + groupSize));
-                                      await write_data!.write(sub_data);
-                                      bitsSent += sub_data.length * 8;
+                                      var subData = uint16List.sublist(i, ((i + groupSize) > uint16List.length ? uint16List.length : i + groupSize));
+                                      await write_data!.write(subData);
+                                      bitsSent += subData.length * 8;
                                       DateTime currentTime = DateTime.now();
                                       Duration elapsedTime = currentTime.difference(startTime);
                                       double elapsedSeconds = elapsedTime.inMicroseconds.toDouble() / 1000000.0; // Convert to seconds
@@ -604,7 +623,10 @@ class _ViewActivityState extends State<ViewActivity> {
               LinearProgressIndicator(
                 value: pgss / 100,
               ),
-              Column(children: _buildServiceTiles(context, list)),
+              Container(
+                margin: const EdgeInsets.only(top: 10),
+                child: Column(children: _buildServiceTiles(context, list)),
+              )
             ],
           ),
         ),
